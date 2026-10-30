@@ -37,7 +37,8 @@
 	"vectorize": [
 		{
 			"binding": "VECTORIZE",
-			"index_name": "feedback-vectors"
+			"index_name": "feedback-vectors",
+			"remote": true
 		}
 	],
 
@@ -45,6 +46,7 @@
 	 * Workers AI - for embeddings (semantic search)
 	 */
 	"ai": {
-		"binding": "AI"
+		"binding": "AI",
+		"remote": true
 	}
 }

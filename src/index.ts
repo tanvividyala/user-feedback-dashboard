@@ -160,41 +160,71 @@ export default {
 				).all<{ content: string; category: string; sentiment: string }>();
 
 				const allFeedback = await env.DB.prepare(
-					'SELECT content FROM feedback LIMIT 50'
+					'SELECT content FROM feedback'
 				).all<{ content: string }>();
 
 				// Generate word frequency for word cloud
 				const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now', 'here', 'there', 'then', 'once', 'if', 'any', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'because', 'as', 'until', 'while', 'although', 'though', 'even', 'still', 'already', 'always', 'never', 'ever', 'really', 've', 'm', 't', 's', 'like', 'get', 'got', 'much', 'many', 'way', 'make', 'made', 'find', 'need', 'try', 'take', 'know', 'think', 'come', 'want', 'use', 'work', 'going', 'been', 'dont', 'cant', 'didnt', 'ive', 'im', 'its']);
 
+				// Sentiment, politeness, and generic words that say nothing about the topic
+				const fillerWords = new Set(['please', 'thanks', 'thank', 'great', 'good', 'love', 'loved', 'like', 'best', 'better', 'worse', 'worst', 'awesome', 'amazing', 'excellent', 'fantastic', 'perfect', 'nice', 'terrible', 'awful', 'horrible', 'frustrating', 'annoying', 'incredibly', 'extremely', 'absolutely', 'completely', 'totally', 'literally', 'actually', 'definitely', 'seriously', 'super', 'quite', 'pretty', 'keeps', 'keep', 'kept', 'getting', 'gets', 'goes', 'going', 'seems', 'seem', 'everything', 'anything', 'something', 'nothing', 'someone', 'anyone', 'everyone', 'thing', 'things', 'stuff', 'year', 'years', 'month', 'months', 'week', 'weeks', 'days', 'hours', 'times', 'time', 'today', 'lately', 'recently', 'since', 'last', 'first', 'back', 'well', 'able', 'sure', 'lots', 'another', 'every', 'team', 'product', 'feature', 'features', 'issue', 'issues', 'problem', 'problems', 'switched', 'users', 'user', 'company', 'help', 'helpful', 'guys', 'wish', 'used', 'using', 'new', 'easy', 'easier', 'hard', 'works', 'working', 'takes', 'needs', 'doesnt', 'isnt', 'wont', 'option', 'options', 'seeing', 'everywhere', 'highly', 'recommend', 'difference', 'place', 'essential', 'feel', 'feels']);
+				const isContentWord = (w: string) => w.length >= 3 && !stopWords.has(w) && !fillerWords.has(w);
+
 				const wordFreq: Record<string, number> = {};
+				const phraseFreq: Record<string, number> = {};
 				allFeedback.results.forEach(item => {
-					const words = item.content.toLowerCase()
+					const tokens = item.content.toLowerCase()
 						.replace(/[^a-z\s]/g, '')
 						.split(/\s+/)
-						.filter(w => w.length > 3 && !stopWords.has(w));
-					words.forEach(word => {
+						.filter(Boolean);
+					tokens.forEach((word, i) => {
+						if (!isContentWord(word)) return;
 						wordFreq[word] = (wordFreq[word] || 0) + 1;
+						const next = tokens[i + 1];
+						if (next && isContentWord(next)) {
+							const phrase = `${word} ${next}`;
+							phraseFreq[phrase] = (phraseFreq[phrase] || 0) + 1;
+						}
 					});
 				});
 
-				const topWords = Object.entries(wordFreq)
-					.sort((a, b) => b[1] - a[1])
-					.slice(0, 25)
-					.map(([word, count]) => ({ word, count }));
+				// Merge plurals into their singular form when both appear (e.g. "emails" -> "email")
+				for (const word of Object.keys(wordFreq)) {
+					const singular = word.slice(0, -1);
+					if (word.endsWith('s') && !word.endsWith('ss') && wordFreq[singular]) {
+						wordFreq[singular] += wordFreq[word];
+						delete wordFreq[word];
+					}
+				}
+
+				// Recurring two-word phrases ("customer service") are more meaningful than their parts,
+				// so they replace their component words and score double when ranking
+				const topPhrases = Object.entries(phraseFreq)
+					.filter(([, count]) => count >= 2)
+					.map(([word, count]) => ({ word, count, score: count * 2 }));
+				const phraseParts = new Set(topPhrases.flatMap(({ word }) => word.split(' ')));
+				const topSingles = Object.entries(wordFreq)
+					.filter(([word]) => !phraseParts.has(word))
+					.map(([word, count]) => ({ word, count, score: count }));
+
+				const topWords = [...topPhrases, ...topSingles]
+					.sort((a, b) => b.score - a.score)
+					.slice(0, 25);
 
 				// Use Workers AI to generate insights
 				const issuesSummary = issues.results.map(i => `- ${i.content}`).join('\n');
 
-				const prompt = `You are a product manager analyzing user feedback. Based on these user complaints and bug reports, write a concise 2-3 sentence summary of the TOP 3 most critical issues that need immediate attention. Be specific and actionable.
+				const systemPrompt = `You are a product manager analyzing user feedback. Identify the TOP 3 most critical issues that need immediate attention. Be specific and actionable.
 
-Feedback:
-${issuesSummary}
+Respond with exactly 3 lines and nothing else, no introduction or closing. Each line must use this format:
+- **Short issue title**: One sentence describing the problem and the recommended action.`;
 
-Summary of top issues:`;
-
-				const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-					prompt,
-					max_tokens: 200,
+				const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+					messages: [
+						{ role: 'system', content: systemPrompt },
+						{ role: 'user', content: `Feedback:\n${issuesSummary}` },
+					],
+					max_tokens: 400,
 				});
 
 				const summary = (aiResponse as { response: string }).response.trim();

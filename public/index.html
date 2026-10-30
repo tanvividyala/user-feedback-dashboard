@@ -202,6 +202,15 @@
             border-left: 4px solid var(--cf-orange);
         }
 
+        .insights-summary ol {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .insights-summary li + li { margin-top: 8px; }
+        .insights-summary p { margin: 0 0 8px; }
+        .insights-summary p:last-child { margin-bottom: 0; }
+
         .insights-loading {
             color: var(--cf-gray-400);
             font-size: 13px;
@@ -214,27 +223,54 @@
         .word-cloud {
             display: flex;
             flex-wrap: wrap;
-            gap: 8px;
+            gap: 10px;
             align-items: center;
             justify-content: center;
             min-height: 100px;
+            padding: 4px;
         }
 
         .word-tag {
-            padding: 4px 10px;
-            border-radius: 4px;
-            background: var(--cf-gray-100);
-            color: var(--cf-gray-800);
-            font-size: 12px;
-            transition: transform 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            font-weight: 500;
+            cursor: default;
+            transition: transform 0.15s, box-shadow 0.15s;
         }
 
-        .word-tag:hover { transform: scale(1.1); }
-        .word-tag.size-1 { font-size: 11px; opacity: 0.7; }
-        .word-tag.size-2 { font-size: 13px; opacity: 0.8; }
-        .word-tag.size-3 { font-size: 15px; font-weight: 500; }
-        .word-tag.size-4 { font-size: 17px; font-weight: 600; background: var(--cf-orange); color: white; }
-        .word-tag.size-5 { font-size: 19px; font-weight: 700; background: var(--cf-dark); color: white; }
+        .word-tag:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(246, 130, 31, 0.2);
+        }
+
+        .word-count {
+            font-size: 0.72em;
+            font-weight: 600;
+            min-width: 18px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            text-align: center;
+            background: rgba(246, 130, 31, 0.14);
+        }
+
+        /* One warm scale: more mentions = deeper color */
+        .word-tag.size-1 { font-size: 12px; background: #fafafa; color: var(--cf-gray-600); border-color: var(--cf-gray-200); }
+        .word-tag.size-1 .word-count { background: var(--cf-gray-200); }
+        .word-tag.size-2 { font-size: 13px; background: #fff7ed; color: #c2410c; border-color: #ffedd5; }
+        .word-tag.size-3 { font-size: 15px; background: #ffedd5; color: #9a3412; border-color: #fed7aa; }
+        .word-tag.size-4 { font-size: 17px; font-weight: 600; background: #fed7aa; color: #7c2d12; border-color: #fdba74; }
+        .word-tag.size-5 {
+            font-size: 19px;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--cf-orange) 0%, #fbad41 100%);
+            color: white;
+            box-shadow: 0 2px 8px rgba(246, 130, 31, 0.3);
+        }
+        .word-tag.size-5 .word-count { background: rgba(255, 255, 255, 0.28); }
 
         /* Source breakdown */
         .source-list { display: flex; flex-direction: column; gap: 8px; }
@@ -441,6 +477,31 @@
             `).join('');
         }
 
+        // Render the AI summary's light markdown (bold, bullet/numbered lists) as safe HTML
+        function renderInsightsMarkdown(text) {
+            const escape = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const inline = s => escape(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            const listItem = /^(?:[-*•]|\*\*\d+\.\*\*|\d+\.)\s+/;
+
+            const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+            // Drop filler intros like "Here is a summary of..."
+            if (lines.length > 1 && /^here (is|are)\b/i.test(lines[0])) lines.shift();
+
+            let html = '';
+            let inList = false;
+            for (const line of lines) {
+                if (listItem.test(line)) {
+                    if (!inList) { html += '<ol>'; inList = true; }
+                    html += `<li>${inline(line.replace(listItem, ''))}</li>`;
+                } else {
+                    if (inList) { html += '</ol>'; inList = false; }
+                    html += `<p>${inline(line)}</p>`;
+                }
+            }
+            if (inList) html += '</ol>';
+            return html;
+        }
+
         function renderWordCloud(words) {
             const container = document.getElementById('word-cloud');
             if (!words?.length) {
@@ -448,15 +509,16 @@
                 return;
             }
 
-            const maxCount = Math.max(...words.map(w => w.count));
+            const maxScore = Math.max(...words.map(w => w.score ?? w.count));
             container.innerHTML = words.map(w => {
-                const ratio = w.count / maxCount;
+                const ratio = (w.score ?? w.count) / maxScore;
                 let size = 1;
                 if (ratio > 0.8) size = 5;
-                else if (ratio > 0.6) size = 4;
-                else if (ratio > 0.4) size = 3;
-                else if (ratio > 0.2) size = 2;
-                return `<span class="word-tag size-${size}">${w.word}</span>`;
+                else if (ratio > 0.65) size = 4;
+                else if (ratio > 0.5) size = 3;
+                else if (ratio > 0.35) size = 2;
+                const label = `${w.count} mention${w.count === 1 ? '' : 's'}`;
+                return `<span class="word-tag size-${size}" title="${label}">${w.word}<span class="word-count">${w.count}</span></span>`;
             }).join('');
         }
 
@@ -529,7 +591,7 @@
                 }
 
                 document.getElementById('insights-container').innerHTML =
-                    `<div class="insights-summary">${data.summary}</div>`;
+                    `<div class="insights-summary">${renderInsightsMarkdown(data.summary)}</div>`;
 
                 renderWordCloud(data.wordCloud);
             } catch (e) {
